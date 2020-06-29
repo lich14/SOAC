@@ -149,11 +149,12 @@ class Multitail_Net(nn.Module):
         logs = []
 
         for tail in range(self.multi_size):
+            h_cur = h
             for i, fc in enumerate(self.fcs[tail]):
-                h_cur = fc(h)
+                h_cur = fc(h_cur)
                 if self.layer_norm and i < len(self.fcs[tail]) - 1:
-                    h_cur = self.layer_norms[tail][i](h)
-                h_cur = self.hidden_activation(h)
+                    h_cur = self.layer_norms[tail][i](h_cur)
+                h_cur = self.hidden_activation(h_cur)
 
             mean_cur = self.mean_fcs[tail](h_cur)
             mean_cur = self.output_activation(mean_cur)

@@ -3,14 +3,14 @@ import torch
 from torch import nn as nn
 from torch.distributions import Normal
 from SOACdistribution import TanhNormal
-from SOACvaluenet import MLP_Net
+from SOACvaluenet import MLP_Net, Multitail_Net
 import time
 
 LOG_SIG_MAX = 2
 LOG_SIG_MIN = -20
 
 
-class TanhGaussianPolicy(MLP_Net):
+class TanhGaussianPolicy(Multitail_Net):
     """
     Usage:
 
@@ -28,48 +28,36 @@ class TanhGaussianPolicy(MLP_Net):
     If return_log_prob is False (default), log_prob = None
         This is done because computing the log_prob can be a bit expensive.
     """
-
     def __init__(
             self,
             hidden_sizes,
             obs_dim,
             action_dim,
             option_num,
-            std=None,
             init_w=1e-3,
             hidden_activation=torch.relu,
             layer_norm=True,
+            comm_num=0,
             **kwargs,
     ):
 
         super().__init__(
             hidden_sizes,
             input_size=obs_dim,
-            output_size=action_dim * option_num,
+            output_size=action_dim,
+            multi_size=option_num,
             init_w=init_w,
             hidden_activation=hidden_activation,
             layer_norm=layer_norm,
+            comm_num=0,
             **kwargs,
         )
 
         self.option_dim = option_num
         self.action_dim = action_dim
-        self.time1 = 0
-        self.time2 = 0
-        self.log_std = None
-        self.std = std
-        if std is None:
-            last_hidden_size = obs_dim
-            if len(hidden_sizes) > 0:
-                last_hidden_size = hidden_sizes[-1]
-            self.last_fc_log_std = nn.Linear(last_hidden_size, action_dim * option_num)
-            self.last_fc_log_std.weight.data.uniform_(-init_w, init_w)
-            self.last_fc_log_std.bias.data.uniform_(-init_w, init_w)
-        else:
-            self.log_std = np.log(std)
-            assert LOG_SIG_MIN <= self.log_std <= LOG_SIG_MAX
 
-        self.array_choose = torch.arange(0, action_dim * option_num).view(-1, action_dim)
+        self.array_choose = torch.arange(0, action_dim * option_num).view(
+            -1, action_dim)
 
     def forward(
             self,
@@ -88,32 +76,23 @@ class TanhGaussianPolicy(MLP_Net):
         if option is not None:
             if option.shape[0] > 1:
                 stack_a = option * self.action_dim
-                option_array = torch.cat([stack_a + i for i in range(self.action_dim)], dim=-1).type_as(obs).long()
+                option_array = torch.cat(
+                    [stack_a + i for i in range(self.action_dim)],
+                    dim=-1).type_as(obs).long()
 
             else:
-                option_array = self.array_choose[option[0]].view(-1, self.action_dim).type_as(obs).long()
+                option_array = self.array_choose[option[0]].view(
+                    -1, self.action_dim).type_as(obs).long()
 
-        h = obs
-        for i, fc in enumerate(self.fcs):
-            h = fc(h)
-            if self.layer_norm:
-                h = self.layer_norms[i](h)
-            h = self.hidden_activation(h)
-
-        mean = self.last_fc(h)
+        mean, logs = super().forward(obs)
         if option is not None:
             mean = torch.gather(mean, 1, option_array)
 
-        if self.std is None:
-            log_std = self.last_fc_log_std(h)
-            log_std = torch.clamp(log_std, LOG_SIG_MIN, LOG_SIG_MAX)
-            if option is not None:
-                log_std = torch.gather(log_std, 1, option_array)
+        log_std = torch.clamp(logs, LOG_SIG_MIN, LOG_SIG_MAX)
+        if option is not None:
+            log_std = torch.gather(log_std, 1, option_array)
 
-            std = torch.exp(log_std)
-        else:
-            std = self.std
-            log_std = self.log_std
+        std = torch.exp(log_std)
 
         log_prob = None
         entropy = None
@@ -125,11 +104,14 @@ class TanhGaussianPolicy(MLP_Net):
             tanh_normal = TanhNormal(mean, std)
             if return_log_prob:
                 if reparameterize is True:
-                    action, pre_tanh_value = tanh_normal.rsample(return_pretanh_value=True)
+                    action, pre_tanh_value = tanh_normal.rsample(
+                        return_pretanh_value=True)
                 else:
-                    action, pre_tanh_value = tanh_normal.sample(return_pretanh_value=True)
+                    action, pre_tanh_value = tanh_normal.sample(
+                        return_pretanh_value=True)
 
-                log_prob = tanh_normal.log_prob(action, pre_tanh_value=pre_tanh_value)
+                log_prob = tanh_normal.log_prob(action,
+                                                pre_tanh_value=pre_tanh_value)
                 log_prob = log_prob.sum(dim=1, keepdim=True)
             else:
                 if reparameterize is True:
@@ -153,7 +135,8 @@ class TanhGaussianPolicy(MLP_Net):
         _, mean, _, _, _, std, *_ = self.forward(state, option)
         action = action.clamp(-1 + 1e-5, 1 - 1e-5)
         u = 0.5 * torch.log((action + 1) / (1 - action))
-        log_prob = Normal(mean, std).log_prob(u) - torch.log(1 - action * action + epsilon)
+        log_prob = Normal(
+            mean, std).log_prob(u) - torch.log(1 - action * action + epsilon)
         log_prob_p = log_prob.sum(dim=1, keepdim=True)
 
         return log_prob_p
@@ -162,10 +145,13 @@ class TanhGaussianPolicy(MLP_Net):
         _, mean, _, _, _, std, *_ = self.forward(state)
         action = action.clamp(-1 + 1e-5, 1 - 1e-5)
         u = 0.5 * torch.log((action + 1) / (1 - action))
-        log_prob = torch.cat([(Normal(mean[:, i * self.action_dim:(i + 1) * self.action_dim],
-                                      std[:, i * self.action_dim:(i + 1) * self.action_dim]).log_prob(u) -
-                               torch.log(1 - action * action + epsilon)).sum(dim=1, keepdim=True)
-                              for i in range(self.option_dim)],
+        log_prob = torch.cat([
+            (Normal(mean[:, i * self.action_dim:(i + 1) * self.action_dim],
+                    std[:, i * self.action_dim:(i + 1) *
+                        self.action_dim]).log_prob(u) -
+             torch.log(1 - action * action + epsilon)).sum(dim=1, keepdim=True)
+            for i in range(self.option_dim)
+        ],
                              dim=-1)
 
         return log_prob

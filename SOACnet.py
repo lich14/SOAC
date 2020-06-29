@@ -67,11 +67,12 @@ def get_net(obs_dim, action_dim, option_dim, hiddenlayer, layernorm=True):
     )
 
     policy = TanhGaussianPolicy(
-        obs_dim=obs_dim,
-        action_dim=action_dim,
-        hidden_sizes=hiddenlayer,
-        option_num=option_dim,
+        hiddenlayer,
+        obs_dim,
+        action_dim,
+        option_dim,
         layer_norm=layernorm,
+        comm_num=0,
     )
 
     beta_net = MLP_Net(

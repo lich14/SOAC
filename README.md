@@ -22,4 +22,4 @@ Hopper-v2, Walker2d-v2, HalfCheetah-v2, Ant-v2
 
 做了实验之后发现实验效果不错，但是学出来的option之间的相似度极高，可能是policy网络重合度太高导致的
 
-[x]policy网络没有重合进行测试
+[]针对policy网络没有重合的情况进行测试

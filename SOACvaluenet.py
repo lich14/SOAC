@@ -81,6 +81,7 @@ class Multitail_Net(nn.Module):
     ):
         super().__init__()
 
+        print(f'shared net num is {comm_num}')
         self.input_size = input_size
         self.output_size = output_size
         self.multi_size = multi_size
